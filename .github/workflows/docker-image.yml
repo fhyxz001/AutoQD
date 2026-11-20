@@ -33,6 +33,9 @@ jobs:
           file: ./platform/Dockerfile
           platforms: linux/amd64
           push: true
+          # 阿里云个人版 ACR 不支持 OCI attestation 清单, 必须关闭
+          provenance: false
+          sbom: false
           tags: |
             ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:latest
             ${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:${{ github.sha }}
