@@ -1,0 +1,15 @@
+services:
+  autoqd:
+    build: ./platform
+    image: autoqd-platform:latest
+    container_name: autoqd
+    ports:
+      - "8080:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - TASKS_DIR=/app/tasks
+      - DATA_DIR=/app/data
+    volumes:
+      - ./tasks:/app/tasks
+      - ./data:/app/data
+    restart: unless-stopped
