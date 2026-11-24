@@ -137,6 +137,15 @@ def next_run_at(run_at):
     return target
 
 
+def wait_with_interrupt(task, seconds):
+    """等待指定秒数, 期间有新的运行/配置操作则提前返回 False"""
+    for _ in range(seconds):
+        if task.event.is_set():
+            return False
+        time.sleep(1)
+    return True
+
+
 def run_with_retries(task, cfg, manual=False):
     max_retries = int(cfg.get("max_retries", 3))
     interval = max(int(cfg.get("retry_interval", 600)), 1)
@@ -151,8 +160,26 @@ def run_with_retries(task, cfg, manual=False):
         except Exception as exc:  # 任务代码异常不应影响调度
             result = {"ok": False, "detail": f"任务异常: {exc}"}
         task.running = False
-        if not isinstance(result, dict) or "ok" not in result:
+        if not isinstance(result, dict) or ("ok" not in result and not result.get("skip")):
             result = {"ok": False, "detail": f"任务返回无效: {result!r}"}
+        if result.get("skip"):
+            # 任务要求推迟执行(如站点限制两次签到间隔), 不计入重试次数
+            detail = str(result.get("detail", "任务跳过"))
+            try:
+                wait = int(result.get("retry_after", interval))
+            except (TypeError, ValueError):
+                wait = interval
+            wait = min(max(wait, 30), 86400)
+            if manual:
+                task.add_record({"ok": False, "detail": f"跳过: {detail}"}, attempt, manual)
+                break
+            attempt -= 1
+            log(f"[{task.name}] 跳过: {detail}, {wait} 秒后重试")
+            task.next_run = f"等待中, {now() + timedelta(seconds=wait):%Y-%m-%d %H:%M:%S} 重试"
+            if not wait_with_interrupt(task, wait):
+                log(f"[{task.name}] 跳过等待被中断")
+                break
+            continue
         task.add_record(result, attempt, manual)
         if result.get("ok"):
             break
@@ -164,11 +191,7 @@ def run_with_retries(task, cfg, manual=False):
             log(f"[{task.name}] 已达最大重试次数({max_retries}), 本轮放弃")
             break
         task.next_run = f"重试等待中, {interval} 秒后第 {attempt + 1} 次尝试"
-        for _ in range(interval):
-            if task.event.is_set():  # 新操作到来, 中断重试等待
-                break
-            time.sleep(1)
-        else:
+        if wait_with_interrupt(task, interval):  # 新操作到来会中断重试等待
             continue
         log(f"[{task.name}] 重试等待被中断")
         break
