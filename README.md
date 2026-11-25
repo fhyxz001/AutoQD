@@ -19,7 +19,6 @@
 |---|---|---|
 | `sd_exacg` | [sd.exacg.cc](https://sd.exacg.cc/) AI 绘图站每日签到（内置 Cloudflare 指纹绕过） | 08:30 |
 | `breezeblue` | [breezeblue.ai](https://breezeblue.ai/) 每日积分领取 | 00:05 |
-| `tekqart` | [tekqart.com](https://www.tekqart.com/plugin.php?id=zqlj_sign) 论坛打卡（Discuz + zqlj_sign 天天打卡） | 08:10 |
 
 ## 快速部署（拉取镜像）
 
@@ -59,7 +58,6 @@ docker compose pull && docker compose up -d   # 以后更新
 2. 每个任务点击 **编辑设置**，填写凭据：
    - `sd_exacg`：填写 `username` / `password`
    - `breezeblue`：填写浏览器登录后复制的 `cookie`（整段 Cookie 即可）
-   - `tekqart`：填 `username` / `password` 即可；若提示 **Cloudflare 拦截**，改填浏览器登录后复制的整段 `cookie`（必须含 `cf_clearance`，且执行机器出口 IP 与浏览器一致），必要时填 `proxy` 走国内住宅代理
 3. 保存后点 **立即运行** 验证，之后每天自动签到
 4. 也可调整签到时刻、重试次数与间隔，保存即生效无需重启
 
