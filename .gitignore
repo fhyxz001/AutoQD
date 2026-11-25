@@ -6,3 +6,6 @@ tasks/*/config.json
 
 __pycache__/
 *.pyc
+
+# 本地辅助工具/记忆数据
+.workbuddy/
