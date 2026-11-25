@@ -12,6 +12,7 @@
 """
 import html as html_lib
 import re
+import time
 from urllib.parse import urljoin
 
 try:
@@ -68,8 +69,23 @@ def _new_session():
     return _http.Session()
 
 
+def _retry(func, attempts=3, delays=(2, 6)):
+    """瞬时网络错误重试 (连接重置/超时等); Cloudflare 拦截不重试"""
+    last = None
+    for index in range(attempts):
+        try:
+            return func()
+        except Blocked:
+            raise
+        except Exception as exc:
+            last = exc
+            if index < len(delays):
+                time.sleep(delays[index])
+    raise last
+
+
 def _get(session, url, referer=None):
-    resp = session.get(url, headers=_headers(referer), timeout=TIMEOUT)
+    resp = _retry(lambda: session.get(url, headers=_headers(referer), timeout=TIMEOUT))
     if _is_blocked(resp):
         raise Blocked(f"Cloudflare 拦截 ({resp.status_code})")
     return resp
@@ -112,7 +128,7 @@ def _login(session, username, password):
     )
     headers = _headers(referer=LOGIN_URL)
     headers.update({"X-Requested-With": "XMLHttpRequest", "Origin": BASE_URL})
-    resp = session.post(url, data=data, headers=headers, timeout=TIMEOUT)
+    resp = _retry(lambda: session.post(url, data=data, headers=headers, timeout=TIMEOUT))
     body = resp.text or ""
     if _is_blocked(resp):
         raise Blocked(f"登录请求被 Cloudflare 拦截 ({resp.status_code})")
@@ -261,4 +277,14 @@ def run(config):
                       f"(含 cf_clearance) 填入任务设置的 cookie 字段",
         }
     except Exception as exc:  # 网络异常/解析异常
-        return {"ok": False, "detail": f"请求异常: {exc}"}
+        text = str(exc)
+        if "curl: (35)" in text or "Connection reset" in text or "reset by peer" in text:
+            return {
+                "ok": False,
+                "detail": "连接被重置(TLS 握手阶段对端 RST): 多为 Cloudflare/WAF 直接阻断或出口 IP 受限, "
+                          "不是账号问题。建议改用含 cf_clearance 的 cookie 模式, 或在任务设置填 proxy 换出口。"
+                          f"原始错误: {text[:120]}",
+            }
+        if "curl: (56)" in text or "curl: (28)" in text:
+            return {"ok": False, "detail": f"网络连接中断/超时(已重试 3 次), 稍后自动重试。原始错误: {text[:120]}"}
+        return {"ok": False, "detail": f"请求异常: {text[:200]}"}

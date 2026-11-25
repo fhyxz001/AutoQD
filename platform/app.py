@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+import types
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -248,19 +249,40 @@ def task_worker(task):
             run_with_retries(task, cfg)
 
 
-def discover_tasks():
+def import_task_module(name, task_file):
+    """导入 task.py; 若文件被转存成 UTF-16/带 NUL 空字节, 清理后重试, 返回 (module, 警告)"""
+    try:
+        spec = importlib.util.spec_from_file_location(f"autoqd_task_{name}", task_file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, ""
+    except (SyntaxError, ValueError) as exc:
+        if "null bytes" not in str(exc):
+            raise
+        with open(task_file, "rb") as file:
+            raw = file.read()
+        source = raw.replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
+        module = types.ModuleType(f"autoqd_task_{name}")
+        module.__file__ = task_file
+        exec(compile(source, task_file, "exec"), module.__dict__)
+        return module, "文件含 NUL 空字节(可能被记事本/微信转存成 UTF-16), 已自动清理后加载, 建议重新拉取原始文件"
+
+
+def discover_tasks(skip=()):
     tasks = {}
     if not os.path.isdir(TASKS_DIR):
         return tasks
     for name in sorted(os.listdir(TASKS_DIR)):
+        if name in skip:
+            continue
         task_file = os.path.join(TASKS_DIR, name, "task.py")
         if not os.path.isfile(task_file):
             continue
         try:
-            spec = importlib.util.spec_from_file_location(f"autoqd_task_{name}", task_file)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            module, warning = import_task_module(name, task_file)
             tasks[name] = Task(name, module)
+            if warning:
+                log(f"加载任务 {name}: {warning}")
         except Exception as exc:
             log(f"加载任务 {name} 失败: {exc}")
     return tasks
@@ -608,7 +630,9 @@ RESCAN_INTERVAL = max(int(os.getenv("RESCAN_INTERVAL", "30")), 5)  # 秒, 定期
 
 def register_new_tasks():
     """扫描 tasks/ 目录, 为尚未加载的任务建线程, 返回新增任务名列表"""
-    discovered = discover_tasks()
+    with TASKS_LOCK:
+        known = set(TASKS)
+    discovered = discover_tasks(skip=known)
     added = []
     with TASKS_LOCK:
         for name, task in discovered.items():
