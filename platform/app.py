@@ -57,6 +57,14 @@ class Task:
         self.records = self.load_records()
         self.next_run = "未启动"
         self.running = False
+        self.retired = False  # 脚本变更后会置位, 旧线程退出
+        self.source_mtime = self._source_mtime()
+
+    def _source_mtime(self):
+        try:
+            return os.path.getmtime(os.path.join(TASKS_DIR, self.name, "task.py"))
+        except OSError:
+            return 0.0
 
     # ---------- 配置 ----------
     def load_config(self):
@@ -202,6 +210,9 @@ def task_worker(task):
     log(f"[{task.name}] 任务线程启动")
     first = True
     while True:
+        if task.retired:
+            log(f"[{task.name}] 任务脚本已更新, 旧线程退出")
+            return
         cfg = task.get_config()
         if first:
             first = False
@@ -232,6 +243,8 @@ def task_worker(task):
                 fired = task.event.wait()  # 禁用时只等操作
             if fired:
                 task.event.clear()
+                if task.retired:
+                    continue
                 action = task.take_action()
                 if action == "run":
                     run_now = True
@@ -645,17 +658,51 @@ def register_new_tasks():
     return [task.name for task in added]
 
 
+def reload_changed_tasks():
+    """task.py 有改动时重载模块并重启任务线程, 免重启生效, 返回已重载任务名"""
+    with TASKS_LOCK:
+        current = list(TASKS.items())
+    reloaded = []
+    for name, task in current:
+        task_file = os.path.join(TASKS_DIR, name, "task.py")
+        try:
+            mtime = os.path.getmtime(task_file)
+        except OSError:
+            continue
+        if mtime <= task.source_mtime:
+            continue
+        if task.running:  # 正在执行, 下一轮再换, 避免打断
+            continue
+        try:
+            module, warning = import_task_module(name, task_file)
+        except Exception as exc:
+            log(f"重载任务 {name} 失败: {exc}")
+            continue
+        new_task = Task(name, module)
+        with TASKS_LOCK:
+            TASKS[name] = new_task
+        task.retired = True
+        task.event.set()
+        log(f"检测到 {name}/task.py 更新, 已重载并重启线程" + (f" ({warning})" if warning else ""))
+        threading.Thread(target=task_worker, args=(new_task,), daemon=True).start()
+        reloaded.append(name)
+    return reloaded
+
+
 def rescan_worker(interval):
-    """新增任务目录后无需重启, 后台定期扫描并自动接管"""
+    """新增或更新任务后无需重启, 后台定期扫描并自动接管"""
     while True:
         time.sleep(interval)
         try:
             added = register_new_tasks()
+            reloaded = reload_changed_tasks()
         except Exception as exc:
-            log(f"扫描新任务失败: {exc}")
+            log(f"扫描任务失败: {exc}")
             continue
         if added:
             log(f"新任务已接管: {', '.join(added)}")
+        if reloaded:
+            log(f"任务脚本已重载: {', '.join(reloaded)}")
 
 
 def main():

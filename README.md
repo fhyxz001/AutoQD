@@ -85,7 +85,7 @@ def run(config):
 ```
 
 2. （可选）放入 `config.json` 定义默认配置，`settings` 中的键会自动出现在 Web UI 的编辑表单里
-3. 无需重启：平台每 30 秒扫描一次 `tasks/`，新任务目录会自动接管（列表随之出现）。也可 `docker compose restart` 立即生效
+3. 无需重启：平台每 30 秒扫描一次 `tasks/`，新任务目录会自动接管（列表随之出现）；**已有任务的 `task.py` 改动也会被检测并自动重载**。也可 `docker compose restart` 立即生效
    - 部署在服务器上时，先用 `git pull` 把任务目录同步到宿主机（`./tasks` 是挂载目录）
    - 确认挂载生效：`docker exec autoqd ls /app/tasks`；确认已加载：`docker logs autoqd | grep 加载任务`
 
