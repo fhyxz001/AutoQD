@@ -261,7 +261,6 @@ def discover_tasks():
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             tasks[name] = Task(name, module)
-            log(f"加载任务: {name}")
         except Exception as exc:
             log(f"加载任务 {name} 失败: {exc}")
     return tasks
@@ -343,7 +342,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   <h1>AutoQD 签到管理平台</h1>
-  <p class="sub">统一管理签到任务 · 当前时间 <span id="now">__NOW__</span> · 页面每 10 秒自动刷新</p>
+  <p class="sub">统一管理签到任务 · 当前时间 <span id="now">__NOW__</span> · 页面每 10 秒自动刷新 · tasks/ 新增任务目录自动接管</p>
   <div id="tasks">加载中...</div>
 </div>
 
@@ -383,7 +382,7 @@ async function refresh() {
 
 function render() {
   const box = document.getElementById('tasks');
-  if (!state.tasks.length) { box.innerHTML = '<div class="task empty">tasks 目录下没有任务</div>'; return; }
+  if (!state.tasks.length) { box.innerHTML = '<div class="task empty">tasks 目录下没有任务, 放入 &lt;任务名&gt;/task.py 后会自动发现</div>'; return; }
   box.innerHTML = state.tasks.map(t => {
     const last = t.records[0];
     const lastBadge = last
@@ -540,7 +539,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def build_state():
     data = {"now": f"{now():%Y-%m-%d %H:%M:%S}", "tasks": []}
-    for task in TASKS.values():
+    with TASKS_LOCK:  # 后台扫描会新增任务, 取快照避免遍历时字典被改动
+        snapshot = sorted(TASKS.values(), key=lambda t: t.name)
+    for task in snapshot:
         cfg = task.get_config()
         data["tasks"].append({
             "name": task.name,
@@ -601,15 +602,43 @@ def update_config(task, body):
 
 
 TASKS = {}
+TASKS_LOCK = threading.RLock()
+RESCAN_INTERVAL = max(int(os.getenv("RESCAN_INTERVAL", "30")), 5)  # 秒, 定期发现 tasks/ 下新增任务
+
+
+def register_new_tasks():
+    """扫描 tasks/ 目录, 为尚未加载的任务建线程, 返回新增任务名列表"""
+    discovered = discover_tasks()
+    added = []
+    with TASKS_LOCK:
+        for name, task in discovered.items():
+            if name not in TASKS:
+                TASKS[name] = task
+                added.append(task)
+    for task in added:
+        log(f"加载任务: {task.name}")
+        threading.Thread(target=task_worker, args=(task,), daemon=True).start()
+    return [task.name for task in added]
+
+
+def rescan_worker(interval):
+    """新增任务目录后无需重启, 后台定期扫描并自动接管"""
+    while True:
+        time.sleep(interval)
+        try:
+            added = register_new_tasks()
+        except Exception as exc:
+            log(f"扫描新任务失败: {exc}")
+            continue
+        if added:
+            log(f"新任务已接管: {', '.join(added)}")
 
 
 def main():
-    global TASKS
-    TASKS = discover_tasks()
-    for task in TASKS.values():
-        threading.Thread(target=task_worker, args=(task,), daemon=True).start()
+    register_new_tasks()
+    threading.Thread(target=rescan_worker, args=(RESCAN_INTERVAL,), daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    log(f"平台启动, 管理页面: http://0.0.0.0:{PORT}")
+    log(f"平台启动, 管理页面: http://0.0.0.0:{PORT} (每 {RESCAN_INTERVAL} 秒扫描新任务)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
