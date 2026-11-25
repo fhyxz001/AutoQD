@@ -689,6 +689,26 @@ def reload_changed_tasks():
     return reloaded
 
 
+def remove_missing_tasks():
+    """任务目录被删除时停止并移除任务, 返回已移除任务名"""
+    if not os.path.isdir(TASKS_DIR):  # 挂载目录异常时不误删
+        return []
+    with TASKS_LOCK:
+        current = list(TASKS.items())
+    removed = []
+    for name, task in current:
+        task_dir = os.path.join(TASKS_DIR, name)
+        if os.path.isfile(os.path.join(task_dir, "task.py")):
+            continue
+        with TASKS_LOCK:
+            TASKS.pop(name, None)
+        task.retired = True
+        task.event.set()
+        log(f"任务目录已移除, 停止任务: {name}")
+        removed.append(name)
+    return removed
+
+
 def rescan_worker(interval):
     """新增或更新任务后无需重启, 后台定期扫描并自动接管"""
     while True:
@@ -696,6 +716,7 @@ def rescan_worker(interval):
         try:
             added = register_new_tasks()
             reloaded = reload_changed_tasks()
+            removed = remove_missing_tasks()
         except Exception as exc:
             log(f"扫描任务失败: {exc}")
             continue
@@ -703,6 +724,8 @@ def rescan_worker(interval):
             log(f"新任务已接管: {', '.join(added)}")
         if reloaded:
             log(f"任务脚本已重载: {', '.join(reloaded)}")
+        if removed:
+            log(f"已移除的任务: {', '.join(removed)}")
 
 
 def main():
