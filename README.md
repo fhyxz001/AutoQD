@@ -19,6 +19,7 @@
 |---|---|---|
 | `sd_exacg` | [sd.exacg.cc](https://sd.exacg.cc/) AI 绘图站每日签到（内置 Cloudflare 指纹绕过） | 08:30 |
 | `breezeblue` | [breezeblue.ai](https://breezeblue.ai/) 每日积分领取 | 00:05 |
+| `hikarinagi` | [www.hikarinagi.org](https://www.hikarinagi.org/) 每日签到（走站点 OIDC 登录 + 积分签到） | 08:40 |
 
 ## 快速部署（拉取镜像）
 
@@ -58,6 +59,7 @@ docker compose pull && docker compose up -d   # 以后更新
 2. 每个任务点击 **编辑设置**，填写凭据：
    - `sd_exacg`：填写 `username` / `password`
    - `breezeblue`：填写浏览器登录后复制的 `cookie`（整段 Cookie 即可）
+   - `hikarinagi`：填写 `account`（邮箱）/ `password`，`user_agent` 可留空用默认值
 3. 保存后点 **立即运行** 验证，之后每天自动签到
 4. 也可调整签到时刻、重试次数与间隔，保存即生效无需重启
 
