@@ -9,6 +9,8 @@
   - 查看：下次运行时间 / 最近结果 / 今日是否完成 / 最近签到记录
   - 操作：立即运行、启用/禁用任务
   - 配置：每日签到时刻、失败重试次数、重试间隔、任务凭据（账号密码 / Cookie）
+  - 设置项来源：优先用任务脚本声明的 `SETTINGS`（含标签/必填/密码类型），未声明的任务也会列出 `config.json` 中已有的键，并可「新增字段」自行维护任意键值
+  - 密码 / Cookie / Token 类字段在页面上不回显，留空保存表示沿用原值
 - **统一调度**：每天按配置时刻签到；容器重启时当天未签到会立即补签
 - **重试机制**：失败后按"重试次数 × 重试间隔"自动重试，提高成功率
 - **记录持久化**：签到记录保存在 `data/` 目录，重启不丢失
@@ -64,6 +66,7 @@ docker compose pull && docker compose up -d   # 以后更新
 4. 也可调整签到时刻、重试次数与间隔，保存即生效无需重启
 
 > 出于安全考虑，仓库中的任务配置不包含凭据；首次在 UI 中填写后会持久化到 `tasks/<任务名>/config.json`（该文件已被 `.gitignore` 排除）。
+> 因此部署端目录里通常只有 `task.py`、没有 `config.json`——页面会按任务脚本声明的 `SETTINGS` 直接显示账号/密码输入框，填写保存即可，无需预置文件。
 
 ## 源码构建
 
@@ -77,6 +80,13 @@ docker compose up -d --build
 1. 在 `tasks/` 下新建文件夹，放入 `task.py`，实现：
 
 ```python
+# 声明设置项, 平台据此在 Web UI 渲染表单(不改这里也能用, 但页面只显示 config.json 已有的键)
+SETTINGS = [
+    {"key": "account", "label": "账号", "type": "text", "required": True},
+    {"key": "password", "label": "密码", "type": "password", "required": True},
+]
+
+
 def run(config):
     """执行一次签到尝试"""
     settings = config.get("settings", {})
@@ -84,7 +94,10 @@ def run(config):
     return {"ok": True, "detail": "签到成功"}
 ```
 
-2. （可选）放入 `config.json` 定义默认配置，`settings` 中的键会自动出现在 Web UI 的编辑表单里
+`SETTINGS` 也可写成 `["account", "password"]` 或 `{"account": {"label": "账号"}}`；字段还支持
+`placeholder` / `help` / `default` / `secret`（`password`、`cookie`、`token` 等键名会自动按密钥处理，不回显）。
+
+2. （可选）放入 `config.json` 定义默认配置；`settings` 中的键会自动出现在 Web UI 的编辑表单里，未在 `SETTINGS` 声明过的键同样可以直接在页面编辑或删除
 3. 无需重启：平台每 30 秒扫描一次 `tasks/`，新任务目录会自动接管（列表随之出现）；**已有任务的 `task.py` 改动也会被检测并自动重载**。也可 `docker compose restart` 立即生效
    - 部署在服务器上时，先用 `git pull` 把任务目录同步到宿主机（`./tasks` 是挂载目录）
    - 确认挂载生效：`docker exec autoqd ls /app/tasks`；确认已加载：`docker logs autoqd | grep 加载任务`

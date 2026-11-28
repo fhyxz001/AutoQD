@@ -33,6 +33,31 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+# 平台据此在 Web UI 渲染设置表单; 即使 config.json 被清空/未部署也能填写登录信息
+SETTINGS = [
+    {
+        "key": "account",
+        "label": "账号（邮箱）",
+        "type": "text",
+        "placeholder": "you@example.com",
+        "required": True,
+        "help": "hikarinagi 账号, 密码在 id.hikarinagi.org 校验",
+    },
+    {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": True,
+        "help": "留空表示沿用已保存的密码",
+    },
+    {
+        "key": "user_agent",
+        "label": "浏览器 UA（可选）",
+        "type": "text",
+        "placeholder": "留空使用内置 Chrome UA",
+    },
+]
+
 
 class LoginError(Exception):
     """登录/签到流程中的可读失败原因"""

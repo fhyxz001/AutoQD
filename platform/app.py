@@ -24,6 +24,55 @@ DEFAULT_CONFIG = {
     "retry_interval": 600,
     "settings": {},
 }
+SECRET_KEY_RE = re.compile(r"pass(word|wd)?|pwd|cookie|token|secret|api[_-]?key", re.I)
+SETTING_TYPES = ("text", "password", "number", "email", "url")
+
+
+def normalize_settings_schema(raw):
+    """把任务模块声明的 SETTINGS 统一成设置项列表.
+
+    支持两种写法:
+        SETTINGS = ["account", "password"]                       # 简写
+        SETTINGS = [{"key": "account", "label": "账号", "required": True}]
+        SETTINGS = {"account": {"label": "账号"}}                 # 字典写法
+    """
+    if isinstance(raw, dict):
+        entries = []
+        for key, spec in raw.items():
+            entry = dict(spec) if isinstance(spec, dict) else {"label": str(spec)}
+            entry["key"] = key
+            entries.append(entry)
+    elif isinstance(raw, (list, tuple)):
+        entries = list(raw)
+    else:
+        return []
+
+    schema = []
+    seen = set()
+    for entry in entries:
+        if isinstance(entry, str):
+            entry = {"key": entry}
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("key") or entry.get("name") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kind = str(entry.get("type") or "text").lower()
+        if kind not in SETTING_TYPES:
+            kind = "text"
+        schema.append({
+            "key": key,
+            "label": str(entry.get("label") or key),
+            "type": kind,
+            "placeholder": str(entry.get("placeholder") or ""),
+            "help": str(entry.get("help") or entry.get("hint") or ""),
+            "required": bool(entry.get("required")),
+            "secret": bool(entry.get("secret")) or kind == "password"
+            or bool(SECRET_KEY_RE.search(key)),
+            "default": "" if entry.get("default") is None else str(entry.get("default")),
+        })
+    return schema
 
 
 def log(message):
@@ -59,6 +108,9 @@ class Task:
         self.running = False
         self.retired = False  # 脚本变更后会置位, 旧线程退出
         self.source_mtime = self._source_mtime()
+        self.settings_schema = normalize_settings_schema(
+            getattr(module, "SETTINGS", None)
+        )
 
     def _source_mtime(self):
         try:
@@ -89,6 +141,11 @@ class Task:
     def get_config(self):
         with self.lock:
             return json.loads(json.dumps(self.config))  # 深拷贝快照
+
+    def get_settings_schema(self):
+        """任务声明的设置项 (账号/密码等), 供 UI 渲染输入框"""
+        with self.lock:
+            return json.loads(json.dumps(self.settings_schema))
 
     # ---------- 动作 (run / config) ----------
     def push_action(self, action):
@@ -365,6 +422,22 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 14px; }
   .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
   .hint { color: #98a2b3; font-size: 12px; margin-top: 4px; }
+  .btn.mini { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+  .field label code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: #98a2b3; background: #f2f4f8;
+    border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+  }
+  .req { color: #d92d20; }
+  .row-key { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; align-items: center; }
+  .row-key input {
+    width: 100%; border: 1px solid #d0d7e2; border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .section-title {
+    margin: 18px 0 10px; font-size: 13px; font-weight: 600; color: #475467;
+    display: flex; align-items: center; justify-content: space-between;
+  }
   .toast {
     position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
     background: #1c2434; color: #fff; border-radius: 8px; padding: 10px 18px;
@@ -390,8 +463,12 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
       <div class="field"><label>失败重试次数</label><input type="number" id="mRetries" min="0" max="20"></div>
     </div>
     <div class="field"><label>重试间隔（秒）</label><input type="number" id="mInterval" min="30" max="86400"></div>
+    <div class="section-title">
+      <span>任务设置</span>
+      <button type="button" class="btn mini" onclick="addCustomField()">+ 新增字段</button>
+    </div>
     <div id="mSettings"></div>
-    <p class="hint">任务设置字段由任务脚本定义, 如账号密码 / Cookie 等</p>
+    <p class="hint">账号 / 密码等登录信息保存在 tasks/&lt;任务名&gt;/config.json；密码类字段不回显，留空表示沿用已保存的值</p>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal()">取消</button>
       <button class="btn primary" onclick="saveConfig()">保存</button>
@@ -403,6 +480,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <script>
 let state = null;
 let editName = null;
+let removedSettings = [];
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -469,34 +547,88 @@ function openModal(name) {
   const t = state.tasks.find(x => x.name === name);
   if (!t) return;
   editName = name;
+  removedSettings = [];
   document.getElementById('mTitle').textContent = name;
   document.getElementById('mEnabled').checked = t.enabled;
   document.getElementById('mRunAt').value = t.run_at;
   document.getElementById('mRetries').value = t.max_retries;
   document.getElementById('mInterval').value = t.retry_interval;
-  const box = document.getElementById('mSettings');
-  const keys = Object.keys(t.settings || {});
-  box.innerHTML = keys.map(k => {
-    const isSecret = /password|cookie|token/i.test(k);
-    return `<div class="field"><label>${esc(k)}</label>` +
-      `<input type="${isSecret ? 'password' : 'text'}" data-setting="${esc(k)}" value="${esc(t.settings[k])}"></div>`;
-  }).join('') || '<p class="hint">此任务没有可配置项</p>';
+
+  const schema = t.settings_schema || [];
+  const settings = t.settings || {};
+  const secretSet = new Set(t.secret_set || []);
+  const known = new Set(schema.map(s => s.key));
+  const extras = Object.keys(settings).filter(k => !known.has(k) && String(settings[k]) !== '');
+  const html = schema.map(s => schemaField(s, settings, secretSet)).join('')
+    + extras.map(k => customField(k, settings[k], true)).join('');
+  document.getElementById('mSettings').innerHTML = html
+    || '<p class="hint">该任务未声明设置项，可点"新增字段"手动添加（例如 account / password）</p>';
   document.getElementById('overlay').classList.add('show');
+}
+
+function schemaField(s, settings, secretSet) {
+  const saved = secretSet.has(s.key);
+  const value = s.secret ? '' : (settings[s.key] ?? s.default ?? '');
+  const type = s.secret ? 'password' : (s.type || 'text');
+  const placeholder = s.placeholder
+    || (s.secret ? (saved ? '已保存，留空不修改' : '未配置') : '');
+  return `<div class="field">` +
+    `<label>${esc(s.label || s.key)}${s.required ? ' <span class="req">*</span>' : ''}` +
+    `<code>${esc(s.key)}</code></label>` +
+    `<input type="${esc(type)}" data-setting="${esc(s.key)}" data-secret="${s.secret ? 1 : 0}" ` +
+    `value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">` +
+    (s.help ? `<p class="hint">${esc(s.help)}</p>` : '') +
+    `</div>`;
+}
+
+function customField(key, value, orig) {
+  return `<div class="field custom" data-custom="1" data-orig="${orig ? esc(key) : ''}">` +
+    `<div class="row-key">` +
+    `<input type="text" data-key placeholder="字段名" value="${esc(key || '')}">` +
+    `<input type="text" data-value placeholder="字段值" value="${esc(value == null ? '' : value)}">` +
+    `<button type="button" class="btn mini" onclick="removeCustomField(this)">删除</button>` +
+    `</div></div>`;
+}
+
+function addCustomField() {
+  const box = document.getElementById('mSettings');
+  const hint = box.querySelector('p.hint');
+  if (hint) hint.remove();
+  box.insertAdjacentHTML('beforeend', customField('', '', false));
+}
+
+function removeCustomField(btn) {
+  const row = btn.closest('[data-custom]');
+  const orig = row.getAttribute('data-orig');
+  if (orig) removedSettings.push(orig);
+  row.remove();
 }
 
 function closeModal() { document.getElementById('overlay').classList.remove('show'); }
 
 async function saveConfig() {
+  const task = state.tasks.find(x => x.name === editName);
+  const secretSet = new Set((task && task.secret_set) || []);
+  const settings = {};
+  document.querySelectorAll('#mSettings [data-setting]').forEach(el => {
+    if (el.dataset.secret === '1' && el.value === '') return;  // 密钥留空 = 保持原值
+    settings[el.dataset.setting] = el.value;
+  });
+  document.querySelectorAll('#mSettings [data-custom]').forEach(row => {
+    const key = row.querySelector('[data-key]').value.trim();
+    if (!key) return;
+    const value = row.querySelector('[data-value]').value;
+    if (value === '' && secretSet.has(key)) return;
+    settings[key] = value;
+  });
   const body = {
     enabled: document.getElementById('mEnabled').checked,
     run_at: document.getElementById('mRunAt').value,
     max_retries: parseInt(document.getElementById('mRetries').value, 10),
     retry_interval: parseInt(document.getElementById('mInterval').value, 10),
-    settings: {}
+    settings: settings,
+    remove_settings: removedSettings
   };
-  document.querySelectorAll('[data-setting]').forEach(el => {
-    body.settings[el.dataset.setting] = el.value;
-  });
   const resp = await fetch('/api/config/' + encodeURIComponent(editName), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -578,13 +710,22 @@ def build_state():
         snapshot = sorted(TASKS.values(), key=lambda t: t.name)
     for task in snapshot:
         cfg = task.get_config()
+        schema = task.get_settings_schema()
+        raw_settings = cfg.get("settings", {})
+        secret_keys = {item["key"] for item in schema if item["secret"]}
+        secret_keys |= {k for k in raw_settings if SECRET_KEY_RE.search(str(k))}
+        # 密钥类字段不回显明文, 仅告知"已配置", 避免浏览器/日志泄露
+        settings = {k: ("" if k in secret_keys else v) for k, v in raw_settings.items()}
+        secret_set = [k for k in raw_settings if k in secret_keys and str(raw_settings[k])]
         data["tasks"].append({
             "name": task.name,
             "enabled": bool(cfg.get("enabled", True)),
             "run_at": cfg.get("run_at", "08:30"),
             "max_retries": cfg.get("max_retries", 3),
             "retry_interval": cfg.get("retry_interval", 600),
-            "settings": cfg.get("settings", {}),
+            "settings": settings,
+            "secret_set": secret_set,
+            "settings_schema": schema,
             "next_run": task.next_run,
             "running": task.running,
             "success_today": task.success_today(),
@@ -624,9 +765,21 @@ def update_config(task, body):
     if "settings" in body:
         if not isinstance(body["settings"], dict):
             return False, "settings 格式错误"
+        secret_keys = {
+            item["key"] for item in task.get_settings_schema() if item["secret"]
+        }
         merged = dict(cfg.get("settings", {}))
         for key, value in body["settings"].items():
-            merged[str(key)] = str(value)
+            key = str(key).strip()
+            if not key:
+                continue
+            value = "" if value is None else str(value)
+            is_secret = key in secret_keys or bool(SECRET_KEY_RE.search(key))
+            if is_secret and value == "" and key in merged:
+                continue  # 密钥不回显, 留空表示保持原值
+            merged[key] = value
+        for key in body.get("remove_settings") or []:
+            merged.pop(str(key).strip(), None)  # 允许删除字段
         cfg["settings"] = merged
     task.save_config(cfg)
     task.push_action("config")
